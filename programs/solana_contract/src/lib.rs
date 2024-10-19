@@ -9,21 +9,30 @@ declare_id!("4ambXgqJSwqyUVK3G2Fu4Nx9PiKZ6822HrQH9hfZVofH");
 pub mod solana_contract {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, withdraw_time: i64) -> ProgramResult {
-        ctx.accounts.user_data.withdrawal_time = withdraw_time;
-        msg!(
-            "Initialized user data with withdrawal time set to {}",
-            withdraw_time
-        );
+    pub fn initialize_vault(
+        ctx: Context<InitializeVault>,
+        duration: i64,
+        vault_id: u64,
+    ) -> ProgramResult {
+        let vault = &mut ctx.accounts.vault_token_account;
+        let vault_data = &mut ctx.accounts.vault_data;
+        let clock = &ctx.accounts.clock;
+        // let rent = &ctx.accounts.rent;
+        let mint = &ctx.accounts.mint;
+
+        vault_data.withdrawal_time = clock.unix_timestamp + duration;
+        vault_data.vault_id = vault_id;
+
+        token::InitializeAccount3 {
+            account: vault.to_account_info(),
+            mint: mint.to_account_info(),
+            authority: ctx.accounts.user.to_account_info(),
+        };
+
         Ok(())
     }
 
-    pub fn deposit_token(
-        ctx: Context<DepositToken>,
-        amount: u64,
-        withdraw_time: i64,
-        mint: Pubkey,
-    ) -> ProgramResult {
+    pub fn deposit_token(ctx: Context<DepositToken>, amount: u64, mint: Pubkey) -> ProgramResult {
         if ctx.accounts.user_token_account.mint != mint {
             return Err(ErrorCode::InvalidMint.into());
         }
@@ -34,8 +43,6 @@ pub mod solana_contract {
             authority: ctx.accounts.user.to_account_info(),
         };
 
-        ctx.accounts.user_data.withdrawal_time = withdraw_time;
-
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
@@ -45,7 +52,7 @@ pub mod solana_contract {
             "Deposited {} tokens into vault at {:?} with timestamp {}",
             amount,
             ctx.accounts.vault_token_account.key(),
-            ctx.accounts.user_data.withdrawal_time
+            ctx.accounts.vault_data.withdrawal_time
         );
 
         Ok(())
@@ -57,7 +64,7 @@ pub mod solana_contract {
         }
 
         let current_time: i64 = ctx.accounts.clock.unix_timestamp;
-        let withdrawal_time = ctx.accounts.user_data.withdrawal_time;
+        let withdrawal_time = ctx.accounts.vault_data.withdrawal_time;
 
         if current_time < withdrawal_time {
             return Err(ErrorCode::WithdrawalNotAllowed.into());
@@ -79,14 +86,50 @@ pub mod solana_contract {
 }
 
 #[derive(Accounts)]
-pub struct DepositToken<'info> {
+pub struct InitializeVault<'info> {
+    #[account(mut)]
     pub user: Signer<'info>, // User who is signing the transaction
 
+    #[account()]
+    pub user_token_account: Account<'info, TokenAccount>, // User's token account 2 make deposit from
+
+    #[account(address = spl_token::id())]
+    pub token_program: Program<'info, Token>,
+
     #[account(
-        mut,
-        associated_token::mint = mint,            // Ensures the user's token account holds tokens of this mint
-        associated_token::authority = user,       // Ensures the user's token account is owned by the user
+        init,
+        space = 8 + 8 + 8, // address + withdrawl + vault_id (8 bytes)
+        payer = user,
     )]
+    pub vault_data: Account<'info, VaultData>,
+
+    #[account(
+        init,
+        payer = user,
+        space = 8 + 96
+    )]
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        token::mint = mint,
+        token::authority = user,
+        payer = user,
+        seeds = [b"vault", user.key().as_ref(),  &vault_data.vault_id.to_le_bytes()],   // Derives the vault's PDA
+        bump,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>, // Program's vault token account
+    pub system_program: Program<'info, System>, // System program
+    pub rent: Sysvar<'info, Rent>,
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+pub struct DepositToken<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>, // User who is signing the transaction
+
+    #[account()]
     pub user_token_account: Account<'info, TokenAccount>, // User's token account for deposit
 
     #[account(
@@ -99,19 +142,11 @@ pub struct DepositToken<'info> {
     #[account(address = spl_token::id())]
     pub token_program: Program<'info, Token>, // Token program to facilitate SPL transfers
 
-    pub system_program: Program<'info, System>, // System program
-
-    pub rent: Sysvar<'info, Rent>, // Rent system variable (to manage account rent-exemption)
-
-    #[account()]
-    pub mint: Account<'info, Mint>, // Mint of the token being deposited
-
-    pub user_data: Account<'info, UserData>, // User data account storing the withdrawal time
+    pub vault_data: Account<'info, VaultData>, // User data account storing the withdrawal time
 }
 
 #[derive(Accounts)]
 pub struct WithdrawToken<'info> {
-    #[account(mut)]
     pub user: Signer<'info>, // User signing the transaction
 
     #[account(mut)]
@@ -127,49 +162,15 @@ pub struct WithdrawToken<'info> {
     #[account(address = spl_token::id())]
     pub token_program: Program<'info, Token>, // Token program to facilitate SPL transfers
 
-    pub system_program: Program<'info, System>, // System program for basic instructions
-
     pub clock: Sysvar<'info, Clock>, // Clock sysvar to get current blockchain time
 
-    #[account(mut)]
-    pub user_data: Account<'info, UserData>, // User data account that stores the withdrawal time
-
-    pub mint: Account<'info, Mint>, // Mint of the token being withdrawn
+    pub vault_data: Account<'info, VaultData>, // User data account that stores the withdrawal time
 }
 
 #[account]
-pub struct UserData {
-    pub withdrawal_time: i64, // The timestamp after which the user can withdraw tokens
-}
-
-#[derive(Accounts)]
-pub struct Initialize<'info> {
-    pub user: Signer<'info>, // User who is signing the transaction
-
-    #[account(
-        mut,
-        associated_token::mint = mint,            // Ensures the user's token account holds tokens of this mint
-        associated_token::authority = user,       // Ensures the user's token account is owned by the user
-    )]
-    pub user_token_account: Account<'info, TokenAccount>, // User's token account for deposit
-
-    #[account(address = spl_token::id())]
-    pub token_program: Program<'info, Token>, // Token program to facilitate SPL transfers
-
-    #[account(
-        mut,
-        seeds = [b"vault", user.key().as_ref()],   // Derives the vault's PDA
-        bump,
-    )]
-    pub vault_token_account: Account<'info, TokenAccount>, // Program's vault token account
-
-    pub system_program: Program<'info, System>, // System program
-
-    pub rent: Sysvar<'info, Rent>, // Rent system variable (to manage account rent-exemption)
-
-    pub mint: Account<'info, Mint>, // Mint of the token being deposited
-
-    pub user_data: Account<'info, UserData>, // User data account
+pub struct VaultData {
+    pub withdrawal_time: i64,
+    pub vault_id: u64,
 }
 
 #[error_code]
