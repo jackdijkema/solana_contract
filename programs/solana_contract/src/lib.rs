@@ -3,7 +3,7 @@ use anchor_spl::token::spl_token;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use spl_token::solana_program::entrypoint::ProgramResult;
 
-declare_id!("4ambXgqJSwqyUVK3G2Fu4Nx9PiKZ6822HrQH9hfZVofH");
+declare_id!("Ef5GU5wYGDREHsv58CqAXTffcQHNGZCGnBHGNcW7riP8");
 
 #[program]
 pub mod solana_contract {
@@ -12,23 +12,14 @@ pub mod solana_contract {
     pub fn initialize_vault(
         ctx: Context<InitializeVault>,
         duration: i64,
-        vault_id: u64,
+        vault_id: i64,
     ) -> ProgramResult {
-        let vault = &mut ctx.accounts.vault_token_account;
         let vault_data = &mut ctx.accounts.vault_data;
-        let clock = &ctx.accounts.clock;
-        // let rent = &ctx.accounts.rent;
-        let mint = &ctx.accounts.mint;
 
-        vault_data.withdrawal_time = clock.unix_timestamp + duration;
+        vault_data.withdrawal_time = Clock::get()?.unix_timestamp + duration;
         vault_data.vault_id = vault_id;
 
-        token::InitializeAccount3 {
-            account: vault.to_account_info(),
-            mint: mint.to_account_info(),
-            authority: ctx.accounts.user.to_account_info(),
-        };
-
+        msg!("Initialized");
         Ok(())
     }
 
@@ -51,8 +42,8 @@ pub mod solana_contract {
         msg!(
             "Deposited {} tokens into vault at {:?} with timestamp {}",
             amount,
-            ctx.accounts.vault_token_account.key(),
-            ctx.accounts.vault_data.withdrawal_time
+            &ctx.accounts.vault_token_account.key(),
+            &ctx.accounts.vault_data.withdrawal_time
         );
 
         Ok(())
@@ -91,7 +82,7 @@ pub struct InitializeVault<'info> {
     pub user: Signer<'info>, // User who is signing the transaction
 
     #[account()]
-    pub user_token_account: Account<'info, TokenAccount>, // User's token account 2 make deposit from
+    pub user_token_account: Box<Account<'info, TokenAccount>>, // User's token account 2 make deposit from
 
     #[account(address = spl_token::id())]
     pub token_program: Program<'info, Token>,
@@ -115,11 +106,11 @@ pub struct InitializeVault<'info> {
         token::mint = mint,
         token::authority = user,
         payer = user,
-        seeds = [b"vault", user.key().as_ref(),  &vault_data.vault_id.to_le_bytes()],   // Derives the vault's PDA
+        seeds = [b"vault", user.key().as_ref(),  &vault_data.vault_id.to_le_bytes()],   
         bump,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>, // Program's vault token account
-    pub system_program: Program<'info, System>, // System program
+    pub vault_token_account: Account<'info, TokenAccount>,
+    pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
     pub clock: Sysvar<'info, Clock>,
 }
@@ -127,7 +118,7 @@ pub struct InitializeVault<'info> {
 #[derive(Accounts)]
 pub struct DepositToken<'info> {
     #[account(mut)]
-    pub user: Signer<'info>, // User who is signing the transaction
+    pub user: Signer<'info>,
 
     #[account()]
     pub user_token_account: Account<'info, TokenAccount>, // User's token account for deposit
@@ -170,7 +161,7 @@ pub struct WithdrawToken<'info> {
 #[account]
 pub struct VaultData {
     pub withdrawal_time: i64,
-    pub vault_id: u64,
+    pub vault_id: i64,
 }
 
 #[error_code]
@@ -184,8 +175,8 @@ pub enum ErrorCode {
 impl From<ErrorCode> for ProgramError {
     fn from(e: ErrorCode) -> ProgramError {
         match e {
-            ErrorCode::InvalidMint => ProgramError::Custom(0),
-            ErrorCode::WithdrawalNotAllowed => ProgramError::Custom(1),
+            ErrorCode::InvalidMint => ProgramError::Custom(e as u32 + 6000),
+            ErrorCode::WithdrawalNotAllowed => ProgramError::Custom(e as u32 + 6000),
         }
     }
 }
